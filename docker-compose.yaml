@@ -39,11 +39,46 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
-      start_period: 30s
     networks:
       - taiga-internal
     expose:
       - 5432
+
+  taiga-init:
+    image: taigaio/taiga-back:latest
+    environment: *default-environment
+    depends_on:
+      taiga-db:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-c"]
+    command: >
+      "python manage.py migrate --noinput &&
+       python manage.py loaddata initial_project_templates &&
+       python manage.py compilemessages &&
+       python manage.py collectstatic --noinput"
+    volumes:
+      - taiga_static_data:/taiga-back/static
+      - taiga_media_data:/taiga-back/media
+    networks:
+      - taiga-internal
+
+  taiga-backend:
+    image: taigaio/taiga-back:latest
+    depends_on:
+      taiga-db:
+        condition: service_healthy
+      taiga-init:
+        condition: service_completed_successfully
+      rabbitmq:
+        condition: service_healthy
+    environment: *default-environment
+    volumes:
+      - taiga_static_data:/taiga-back/static
+      - taiga_media_data:/taiga-back/media
+    networks:
+      - taiga-internal
+    expose:
+      - 8000
 
   rabbitmq:
     image: rabbitmq:3-management-alpine
@@ -53,38 +88,15 @@ services:
       RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASS:-taiga}
       RABBITMQ_DEFAULT_VHOST: ${RABBITMQ_VHOST:-taiga}
     healthcheck:
-      test: ["CMD", "rabbitmq-diagnostics", "check_running"]
+      test: ["CMD", "rabbitmqctl", "status"]
       interval: 30s
       timeout: 10s
       retries: 5
-      start_period: 30s
     networks:
       - taiga-internal
     expose:
       - 5672
       - 15672
-
-  taiga-backend:
-    image: taigaio/taiga-back:latest
-    depends_on:
-      taiga-db:
-        condition: service_healthy
-      rabbitmq:
-        condition: service_healthy
-    environment: *default-environment
-    volumes:
-      - taiga_static_data:/taiga-back/static
-      - taiga_media_data:/taiga-back/media
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/ready"]
-      interval: 30s
-      timeout: 10s
-      retries: 5
-      start_period: 30s
-    networks:
-      - taiga-internal
-    expose:
-      - 8000
 
   taiga-frontend:
     image: taigaio/taiga-front:latest
@@ -93,12 +105,6 @@ services:
     environment:
       TAIGA_API_URL: "${TAIGA_SCHEME:-http}://${TAIGA_DOMAIN:-localhost:9000}${SUBPATH:-}/api/v1/"
       TAIGA_WEBSOCKETS_URL: "${WEBSOCKETS_SCHEME:-ws}://${TAIGA_DOMAIN:-localhost:9000}${SUBPATH:-}/events"
-    healthcheck:
-      test: ["CMD", "wget", "--spider", "-q", "http://localhost:80"]
-      interval: 30s
-      timeout: 10s
-      retries: 5
-      start_period: 30s
     networks:
       - taiga-internal
     expose:
@@ -114,12 +120,6 @@ services:
       RABBITMQ_USER: ${RABBITMQ_USER:-taiga}
       RABBITMQ_PASS: ${RABBITMQ_PASS:-taiga}
       RABBITMQ_VHOST: ${RABBITMQ_VHOST:-taiga}
-    healthcheck:
-      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8888/events"]
-      interval: 30s
-      timeout: 10s
-      retries: 5
-      start_period: 30s
     networks:
       - taiga-internal
     expose:
@@ -132,12 +132,6 @@ services:
     environment:
       SECRET_KEY: ${SECRET_KEY:-taiga-secret-key}
       MAX_AGE: ${ATTACHMENTS_MAX_AGE:-360}
-    healthcheck:
-      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8003"]
-      interval: 30s
-      timeout: 10s
-      retries: 5
-      start_period: 30s
     networks:
       - taiga-internal
     expose:
@@ -148,28 +142,16 @@ services:
       context: .
       dockerfile: Dockerfile.nginx
     depends_on:
-      taiga-db:
-        condition: service_healthy
-      taiga-backend:
-        condition: service_healthy
-      taiga-frontend:
-        condition: service_healthy
-      taiga-events:
-        condition: service_healthy
-      taiga-protected:
-        condition: service_healthy
+      - taiga-frontend
+      - taiga-backend
+      - taiga-events
+      - taiga-protected
     ports:
       - "80:80"
       - "443:443"
     volumes:
       - taiga_media_data:/taiga/media:ro
       - taiga_static_data:/taiga/static:ro
-    healthcheck:
-      test: ["CMD", "wget", "--spider", "-q", "http://localhost/api/v1/ready"]
-      interval: 30s
-      timeout: 10s
-      retries: 5
-      start_period: 30s
     networks:
       - taiga-internal
 
