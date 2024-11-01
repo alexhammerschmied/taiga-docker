@@ -1,38 +1,183 @@
 version: "3.8"
 
+x-environment: &default-environment
+  # [Previous environment variables remain the same]
+  TAIGA_SCHEME: ${TAIGA_SCHEME:-http}
+  TAIGA_DOMAIN: ${TAIGA_DOMAIN:-localhost:9000}
+  SUBPATH: ${SUBPATH:-""}
+  WEBSOCKETS_SCHEME: ${WEBSOCKETS_SCHEME:-ws}
+  SECRET_KEY: ${SECRET_KEY:-taiga-secret-key}
+  POSTGRES_DB: taiga
+  POSTGRES_USER: ${POSTGRES_USER:-taiga}
+  POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-taiga}
+  POSTGRES_HOST: taiga-db
+  EMAIL_BACKEND: django.core.mail.backends.${EMAIL_BACKEND:-console}.EmailBackend
+  EMAIL_HOST: ${EMAIL_HOST:-smtp.host.example.com}
+  EMAIL_PORT: ${EMAIL_PORT:-587}
+  EMAIL_HOST_USER: ${EMAIL_HOST_USER:-user}
+  EMAIL_HOST_PASSWORD: ${EMAIL_HOST_PASSWORD:-password}
+  EMAIL_DEFAULT_FROM: ${EMAIL_DEFAULT_FROM:-changeme@example.com}
+  EMAIL_USE_TLS: ${EMAIL_USE_TLS:-True}
+  EMAIL_USE_SSL: ${EMAIL_USE_SSL:-False}
+  RABBITMQ_USER: ${RABBITMQ_USER:-taiga}
+  RABBITMQ_PASS: ${RABBITMQ_PASS:-taiga}
+  RABBITMQ_VHOST: ${RABBITMQ_VHOST:-taiga}
+  RABBITMQ_ERLANG_COOKIE: ${RABBITMQ_ERLANG_COOKIE:-secret-erlang-cookie}
+  CELERY_ENABLED: "False"
+
 services:
-  # Stateful Services (Should always be separate)
-  db:
+  taiga-db:
     image: postgres:13
+    environment:
+      POSTGRES_DB: taiga
+      POSTGRES_USER: ${POSTGRES_USER:-taiga}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-taiga}
     volumes:
-      - db_data:/var/lib/postgresql/data
-    # ... config ...
+      - taiga_db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-taiga}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks:
+      - taiga-internal
+    expose:
+      - 5432
 
   rabbitmq:
     image: rabbitmq:3-management-alpine
-    # ... config ...
+    environment:
+      RABBITMQ_ERLANG_COOKIE: ${RABBITMQ_ERLANG_COOKIE:-secret-erlang-cookie}
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-taiga}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASS:-taiga}
+      RABBITMQ_DEFAULT_VHOST: ${RABBITMQ_VHOST:-taiga}
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "check_running"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    networks:
+      - taiga-internal
+    expose:
+      - 5672
+      - 15672
 
-  # Application Services (Could be combined)
-  backend:
-    image: taiga-combined-backend  # Custom image combining backend + protected
+  taiga-backend:
+    image: taigaio/taiga-back:latest
     depends_on:
-      - db
-      - rabbitmq
+      taiga-db:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    environment: *default-environment
     volumes:
-      - media_data:/app/media
-    # ... config ...
+      - taiga_static_data:/taiga-back/static
+      - taiga_media_data:/taiga-back/media
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/ready"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    networks:
+      - taiga-internal
+    expose:
+      - 8000
 
-  frontend:
-    image: taiga-combined-frontend  # Custom image combining frontend + nginx
+  taiga-frontend:
+    image: taigaio/taiga-front:latest
     depends_on:
-      - backend
+      - taiga-backend
+    environment:
+      TAIGA_API_URL: "${TAIGA_SCHEME:-http}://${TAIGA_DOMAIN:-localhost:9000}${SUBPATH:-}/api/v1/"
+      TAIGA_WEBSOCKETS_URL: "${WEBSOCKETS_SCHEME:-ws}://${TAIGA_DOMAIN:-localhost:9000}${SUBPATH:-}/events"
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:80"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    networks:
+      - taiga-internal
+    expose:
+      - 80
+
+  taiga-events:
+    image: taigaio/taiga-events:latest
+    depends_on:
+      - taiga-backend
+      - rabbitmq
+    environment:
+      SECRET_KEY: ${SECRET_KEY:-taiga-secret-key}
+      RABBITMQ_USER: ${RABBITMQ_USER:-taiga}
+      RABBITMQ_PASS: ${RABBITMQ_PASS:-taiga}
+      RABBITMQ_VHOST: ${RABBITMQ_VHOST:-taiga}
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8888/events"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    networks:
+      - taiga-internal
+    expose:
+      - 8888
+
+  taiga-protected:
+    image: taigaio/taiga-protected:latest
+    depends_on:
+      - taiga-backend
+    environment:
+      SECRET_KEY: ${SECRET_KEY:-taiga-secret-key}
+      MAX_AGE: ${ATTACHMENTS_MAX_AGE:-360}
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8003"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    networks:
+      - taiga-internal
+    expose:
+      - 8003
+
+  taiga-gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile.nginx
+    depends_on:
+      taiga-db:
+        condition: service_healthy
+      taiga-backend:
+        condition: service_healthy
+      taiga-frontend:
+        condition: service_healthy
+      taiga-events:
+        condition: service_healthy
+      taiga-protected:
+        condition: service_healthy
     ports:
       - "80:80"
       - "443:443"
     volumes:
-      - media_data:/app/media:ro
-    # ... config ...
+      - taiga_media_data:/taiga/media:ro
+      - taiga_static_data:/taiga/static:ro
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost/api/v1/ready"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    networks:
+      - taiga-internal
+
+networks:
+  taiga-internal:
+    driver: bridge
 
 volumes:
-  db_data:
-  media_data:
+  taiga_db_data:
+  taiga_media_data:
+  taiga_static_data:
