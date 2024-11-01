@@ -12,11 +12,13 @@ x-environment: &default-environment
   SECRET_KEY: ${SECRET_KEY:-taiga-secret-key}
   
   # Database settings
+  POSTGRES_DB: taiga
   POSTGRES_USER: ${POSTGRES_USER:-taiga}
   POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-taiga}
+  POSTGRES_HOST: taiga-db
   
   # SMTP settings
-  EMAIL_BACKEND: ${EMAIL_BACKEND:-console}
+  EMAIL_BACKEND: django.core.mail.backends.${EMAIL_BACKEND:-console}.EmailBackend
   EMAIL_HOST: ${EMAIL_HOST:-smtp.host.example.com}
   EMAIL_PORT: ${EMAIL_PORT:-587}
   EMAIL_HOST_USER: ${EMAIL_HOST_USER:-user}
@@ -37,7 +39,29 @@ x-environment: &default-environment
   # Telemetry
   ENABLE_TELEMETRY: ${ENABLE_TELEMETRY:-True}
 
+  # Celery
+  CELERY_ENABLED: "False"
+
+x-volumes: &default-back-volumes
+  - taiga_static_data:/taiga-back/static
+  - taiga_media_data:/taiga-back/media
+
 services:
+  # Database initialization service
+  taiga-manage:
+    image: taigaio/taiga-back:latest
+    environment: *default-environment
+    depends_on:
+      taiga-db:
+        condition: service_healthy
+    entrypoint: ["sh", "-c"]
+    command: >
+      "python manage.py migrate --noinput &&
+       python manage.py loaddata initial_project_templates &&
+       python manage.py compilemessages &&
+       python manage.py collectstatic --noinput"
+    volumes: *default-back-volumes
+
   taiga-db:
     image: postgres:13
     environment:
@@ -55,14 +79,12 @@ services:
   taiga-backend:
     image: taigaio/taiga-back:latest
     depends_on:
-      - taiga-db
-    environment:
-      <<: *default-environment
-      POSTGRES_DB: taiga
-      POSTGRES_HOST: taiga-db
-    volumes:
-      - taiga_media_data:/taiga-back/media
-      - taiga_static_data:/taiga-back/static
+      taiga-db:
+        condition: service_healthy
+      taiga-manage:
+        condition: service_completed_successfully
+    environment: *default-environment
+    volumes: *default-back-volumes
 
   taiga-frontend:
     image: taigaio/taiga-front:latest
