@@ -40,7 +40,6 @@ x-volumes: &default-back-volumes
   - taiga_media_data:/taiga-back/media
 
 services:
-  # Database initialization service
   taiga-manage:
     image: taigaio/taiga-back:latest
     environment: *default-environment
@@ -54,6 +53,10 @@ services:
        python manage.py compilemessages &&
        python manage.py collectstatic --noinput"
     volumes: *default-back-volumes
+    networks:
+      - taiga-internal
+    expose:
+      - 8000
 
   taiga-db:
     image: postgres:13
@@ -68,6 +71,10 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    networks:
+      - taiga-internal
+    expose:
+      - 5432
 
   taiga-backend:
     image: taigaio/taiga-back:latest
@@ -78,6 +85,10 @@ services:
         condition: service_completed_successfully
     environment: *default-environment
     volumes: *default-back-volumes
+    networks:
+      - taiga-internal
+    expose:
+      - 8000
 
   taiga-frontend:
     image: taigaio/taiga-front:latest
@@ -86,6 +97,10 @@ services:
     environment:
       TAIGA_API_URL: "${TAIGA_SCHEME:-http}://${TAIGA_DOMAIN:-localhost:9000}${SUBPATH:-}/api/v1/"
       TAIGA_WEBSOCKETS_URL: "${WEBSOCKETS_SCHEME:-ws}://${TAIGA_DOMAIN:-localhost:9000}${SUBPATH:-}/events"
+    networks:
+      - taiga-internal
+    expose:
+      - 80
 
   taiga-events:
     image: taigaio/taiga-events:latest
@@ -97,6 +112,10 @@ services:
       RABBITMQ_USER: ${RABBITMQ_USER:-taiga}
       RABBITMQ_PASS: ${RABBITMQ_PASS:-taiga}
       RABBITMQ_VHOST: ${RABBITMQ_VHOST:-taiga}
+    networks:
+      - taiga-internal
+    expose:
+      - 8888
 
   taiga-protected:
     image: taigaio/taiga-protected:latest
@@ -105,6 +124,10 @@ services:
     environment:
       SECRET_KEY: ${SECRET_KEY:-taiga-secret-key}
       MAX_AGE: ${ATTACHMENTS_MAX_AGE:-360}
+    networks:
+      - taiga-internal
+    expose:
+      - 8003
 
   rabbitmq:
     image: rabbitmq:3-management-alpine
@@ -113,6 +136,11 @@ services:
       RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-taiga}
       RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASS:-taiga}
       RABBITMQ_DEFAULT_VHOST: ${RABBITMQ_VHOST:-taiga}
+    networks:
+      - taiga-internal
+    expose:
+      - 5672
+      - 15672
 
   taiga-gateway:
     build:
@@ -129,6 +157,12 @@ services:
     volumes:
       - taiga_media_data:/taiga/media:ro
       - taiga_static_data:/taiga/static:ro
+    networks:
+      - taiga-internal
+
+networks:
+  taiga-internal:
+    driver: bridge
 
 volumes:
   taiga_db_data:
